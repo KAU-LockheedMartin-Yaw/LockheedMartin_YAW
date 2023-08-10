@@ -3,6 +3,7 @@ import numpy as np
 from djitellopy import Tello
 from pyzbar.pyzbar import decode
 import os
+import time
 
 # 빨간색 범위 정의
 lower_red = np.array([0, 120, 70])
@@ -16,8 +17,9 @@ upper_blue = np.array([140, 255, 255])
 lower_green = np.array([45, 70, 60])
 upper_green = np.array([75, 255, 255])
 
-color = ['red','green','blue']
-i = 2 # 빨->초->파 순서
+# 탐색하는 색상 순서
+color = ['blue','green','red',]
+i = 0 # 빨->초->파 순서
 
 # 디렉터리 생성 (이미지 저장)
 if not os.path.exists("captured_images"):
@@ -73,10 +75,18 @@ def detect_triangles(img):
 
         # 근사화된 윤곽선이 3개의 점으로 이루어져 있으면, 삼각형으로 판단
         if len(approx) == 3:
-            cv2.drawContours(img, [approx], 0, (0, 255, 0), 2)  # 초록색으로 삼각형 그리기
-            print("Back")
+            # 삼각형의 중심 좌표 계산
+            triangle_center = np.mean(approx, axis=0)
+            triangle_center = tuple(map(int, triangle_center[0]))
 
-    return img
+            # 중심의 색상이 원하는 색상 범위에 속하는지 확인
+            center_color = get_center_color(img, triangle_center)
+            if center_color == color[i]:  # i는 현재 탐지하고자 하는 색상의 인덱스
+                cv2.drawContours(img, [approx], 0, (0, 255, 0), 2)  # 초록색으로 삼각형 그리기
+                print(f"Detected {color[i]} triangle")
+
+                return True,triangle_center,img
+    return False,None,img
 
 def get_center_color(frame,center):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -101,14 +111,18 @@ def get_center_color(frame,center):
 # Tello 초기화
 tello = Tello()
 tello.connect()
+print("배터리 잔량 : ",tello.get_battery())
 
 # 비디오 피드 시작
 tello.streamon()
 
 tello.takeoff()
 
+tello.move_up(20)
+
 count = 0
 capture = False
+qr = False
 
 while True:
     # 현재 Tello의 카메라 프레임 받아오기
@@ -117,13 +131,24 @@ while True:
         frame = tello.get_frame_read().frame
     frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
-    tello.move_up(20)
+    
     # 원을 감지하고 그 원의 색깔이 지정된 색인지 확인
-    check, center, frame = detect_circles(frame,color[i])
+    if i<2:
+        check, center, frame = detect_circles(frame,color[i])
+    else:
+        check, center, frame = detect_triangles(frame,color[i])
+
     cv2.imshow("Original Frame", frame)
 
+    #다음 원 혹은 삼각형 찾기
+    if i!=0 and not check:
+        tello.rotate_clockwise(30)
+    elif not check:
+        tello.move_up(30)
+        tello.move_down(20)
+
     # 원이 감지되면 원의 중심을 찾아서 텔로를 움직여 원을 중앙으로 이동
-    if check:
+    if check and (not qr):
         # 원의 중심과 프레임 중심의 x, y 차이 계산
         dx = int(frame.shape[1]/2 - center[0])
         dy = int(frame.shape[0]/2 - center[1])
@@ -144,22 +169,27 @@ while True:
                 tello.move_up(20)
             count+=1
             capture = True
+            
+        time.sleep(1)
         
         # 추가로, 원의 크기를 기반으로 텔로를 전진 또는 후진
 
         # 원이 중앙에 가깝게 위치하면 이미지 캡처
-        if count > 3 and capture:
+        if count > (i+1) * 4 and capture:
             image_path = os.path.join("captured_images", f"capture_{image_count}.jpg")
             cv2.imwrite(image_path, frame)
             image_count += 1
             print(f"Image captured: {image_path}")
             capture = False
+            qr = True
         
-    
-    #tello.move_down(20) #qr 위치로 조정
-    detect_qr_code(frame)
+    if image_count>=1 and qr:
+        tello.move_down(20) #qr 위치로 조정
+        if detect_qr_code(frame):
+            qr = False
+            i+=1
+            tello.move_up(20)
         
-
 
     #마지막에만 할 것
     #frame = detect_triangles(frame)
